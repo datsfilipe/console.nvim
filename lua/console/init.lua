@@ -285,7 +285,7 @@ function M.setup(opts)
           vim.schedule(function()
             send_input(input)
             if state.job then
-              api.nvim_feedkeys(':! ', 'n', false)
+              api.nvim_feedkeys(':!', 'n', false)
             end
             vim.schedule(function()
               state.keep_alive = false
@@ -296,7 +296,7 @@ function M.setup(opts)
           vim.schedule(function()
             M.run(command)
             if state.job then
-              api.nvim_feedkeys(':! ', 'n', false)
+              api.nvim_feedkeys(':!', 'n', false)
             end
             vim.schedule(function()
               state.keep_alive = false
