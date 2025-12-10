@@ -46,7 +46,31 @@ require("console").setup({
     height_ratio = 0.45,
     min_height = 6,
   },
+  -- interactive command handlers
+  -- requires running nvim using the provided wrapper script (scripts/wrapper.sh)
+  interactive = {
+    fzf = function(output)
+      local path = output:gsub('^%s*(.-)%s*$', '%1')
+      if path ~= '' then
+        print('Opening: ' .. path)
+        vim.cmd('edit ' .. vim.fn.fnameescape(path))
+      else
+        print 'No file selected.'
+      end
+    end,
+    lazygit = function()
+      vim.cmd 'checktime'
+    end,
+  },
 })
+```
+
+## Wrapper Script
+
+To use the interactive features (like controlling `fzf` output from the terminal back to `nvim`), you must launch `nvim` using the wrapper script located at `scripts/wrapper.sh`.
+
+```bash
+./scripts/wrapper.sh .
 ```
 
 ## License
