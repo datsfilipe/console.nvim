@@ -5,7 +5,7 @@ set -m
 export CONSOLE_ID="session_${RANDOM}_$(date +%s)"
 CMD_FILE="/tmp/nvim_console_cmd_${CONSOLE_ID}"
 
-nvim --clean -u init.lua "$@" &
+nvim "$@" &
 NVIM_PID=$!
 
 fg %1
