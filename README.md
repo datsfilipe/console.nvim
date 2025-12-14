@@ -2,7 +2,7 @@
 
 # `console.nvim`
 
-Terminal interaction on Neovim. Might be a useless plugin, but I kinda like the aesthetics of it. Based on [@tsoding](https://github.com/rexim) workflow on Emacs (I never used Emacs, and probably never will).
+Terminal interaction on Neovim. Might be a useless plugin, but I kinda like the aesthetics of it.
 
 </div>
 
