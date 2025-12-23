@@ -28,6 +28,7 @@ local state = {
   remainder = '',
   ns_id = api.nvim_create_namespace 'ConsoleHighlights',
   search_paths = {},
+  search_match_id = nil,
 }
 
 local augroup = api.nvim_create_augroup('ConsoleRun', { clear = true })
@@ -93,16 +94,27 @@ local function apply_syntax(buf)
 end
 
 local function apply_search_highlight(query)
-  ---@diagnostic disable-next-line: param-type-mismatch
-  pcall(vim.cmd, 'syntax clear ConsoleMatch')
-  if not query or query == '' then
+  if not (state.win and api.nvim_win_is_valid(state.win)) then
     return
   end
 
-  local regex = '\\c' .. fn.escape(query, '\\/.*$^~[]')
-  ---@diagnostic disable-next-line: param-type-mismatch
-  pcall(vim.cmd, string.format('syntax match ConsoleMatch /%s/', regex))
-  vim.cmd 'highlight! link ConsoleMatch Search'
+  api.nvim_win_call(state.win, function()
+    if state.search_match_id then
+      pcall(fn.matchdelete, state.search_match_id)
+      state.search_match_id = nil
+    end
+
+    if not query or query == '' then
+      return
+    end
+
+    local regex = '\\c' .. fn.escape(query, '\\/.*$^~[]')
+
+    local ok, id = pcall(fn.matchadd, 'Search', regex, 200)
+    if ok then
+      state.search_match_id = id
+    end
+  end)
 end
 
 local function apply_extmarks(start_line, end_line)
@@ -361,6 +373,7 @@ end
 
 function M.close()
   stop_active_processes()
+  state.search_match_id = nil
   api.nvim_clear_autocmds { group = augroup }
   if state.win and api.nvim_win_is_valid(state.win) then
     api.nvim_win_close(state.win, true)
@@ -427,6 +440,8 @@ local function start_live_session(cmd_generator)
   ensure_output_window()
   stop_active_processes()
 
+  state.search_match_id = nil
+
   vim.bo[state.buf].modifiable = true
   api.nvim_buf_set_lines(state.buf, 0, -1, false, {})
   api.nvim_buf_clear_namespace(state.buf, state.ns_id, 0, -1)
@@ -480,9 +495,7 @@ local function start_live_session(cmd_generator)
             fn.jobstop(state.job)
           end
 
-          api.nvim_buf_call(state.buf, function()
-            apply_search_highlight(query)
-          end)
+          apply_search_highlight(query)
 
           vim.bo[state.buf].modifiable = true
           api.nvim_buf_set_lines(state.buf, 0, -1, false, {})
