@@ -153,9 +153,7 @@ local function apply_extmarks(start_line, end_line)
 end
 
 local function flush_queue()
-  if
-    #state.queue == 0 or not (state.buf and api.nvim_buf_is_valid(state.buf))
-  then
+  if #state.queue == 0 or not (state.buf and api.nvim_buf_is_valid(state.buf)) then
     return
   end
 
@@ -226,8 +224,7 @@ end
 
 local function open_file(file, row, col)
   M.close()
-  local target = (state.origin_win and api.nvim_win_is_valid(state.origin_win))
-      and state.origin_win
+  local target = (state.origin_win and api.nvim_win_is_valid(state.origin_win)) and state.origin_win
     or api.nvim_get_current_win()
   api.nvim_set_current_win(target)
 
@@ -330,10 +327,7 @@ local function ensure_output_window()
     if #wins > 0 then
       state.win = wins[1]
     else
-      local height = math.max(
-        config.window.min_height,
-        math.floor(vim.o.lines * config.window.height_ratio)
-      )
+      local height = math.max(config.window.min_height, math.floor(vim.o.lines * config.window.height_ratio))
       vim.cmd('botright ' .. height .. 'split')
       state.win = api.nvim_get_current_win()
     end
@@ -503,10 +497,7 @@ end
 
 function M.live_grep()
   start_live_session(function(query)
-    return string.format(
-      'rg --vimgrep --smart-case --color=never "%s" .',
-      query:gsub('"', '\\"')
-    )
+    return string.format('rg --vimgrep --smart-case --color=never "%s" .', query:gsub('"', '\\"'))
   end)
 end
 
@@ -515,19 +506,13 @@ function M.live_files()
     local escaped = query:gsub('"', '\\"')
 
     if fn.executable 'fd' == 1 then
-      return string.format(
-        'fd --type f --color=never --full-path "%s" .',
-        escaped
-      )
+      return string.format('fd --type f --color=never --full-path "%s" .', escaped)
     end
 
     return {
       'sh',
       '-c',
-      string.format(
-        'rg --files --color=never . | rg --smart-case --color=never "%s"',
-        escaped
-      ),
+      string.format('rg --files --color=never . | rg --smart-case --color=never "%s"', escaped),
     }
   end)
 end
