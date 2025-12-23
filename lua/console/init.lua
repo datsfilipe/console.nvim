@@ -124,6 +124,10 @@ local function apply_extmarks(start_line, end_line)
           priority = 100,
         })
       else
+        if not line:find '[/\\]' and not line:find '%.' then
+          goto continue
+        end
+
         local init = 1
         while true do
           local ws, we = line:find('%S+', init)
@@ -142,6 +146,7 @@ local function apply_extmarks(start_line, end_line)
           end
           init = we + 1
         end
+        ::continue::
       end
     end
   end)
@@ -202,6 +207,8 @@ local function append_data(data)
   end
 
   data = strip_ansi(data:gsub('\r', ''))
+  data = data:gsub('%z', '')
+
   local text = state.remainder .. data
 
   if not text:find('\n', 1, true) then
@@ -266,6 +273,7 @@ end
 
 local function ensure_output_window()
   local current_win = api.nvim_get_current_win()
+
   if current_win ~= state.win and current_win ~= state.input_win then
     state.origin_win = current_win
   end
@@ -300,6 +308,7 @@ local function ensure_output_window()
       state.win = api.nvim_get_current_win()
     end
   end
+
   api.nvim_win_set_buf(state.win, state.buf)
 
   local wo = vim.wo[state.win]
@@ -383,14 +392,18 @@ local function start_live_session(cmd_generator)
   api.nvim_buf_clear_namespace(state.buf, state.ns_id, 0, -1)
   vim.bo[state.buf].modifiable = false
 
-  state.input_buf = api.nvim_create_buf(false, true)
-  vim.bo[state.input_buf].buftype = 'nofile'
-  vim.bo[state.input_buf].bufhidden = 'wipe'
+  if not (state.input_buf and api.nvim_buf_is_valid(state.input_buf)) then
+    state.input_buf = api.nvim_create_buf(false, true)
+    vim.bo[state.input_buf].buftype = 'nofile'
+    vim.bo[state.input_buf].bufhidden = 'wipe'
+  end
 
   if not (state.input_win and api.nvim_win_is_valid(state.input_win)) then
     vim.cmd 'botright 1split'
     state.input_win = api.nvim_get_current_win()
   end
+
+  api.nvim_set_current_win(state.input_win)
   api.nvim_win_set_buf(state.input_win, state.input_buf)
 
   local wo = vim.wo[state.input_win]
@@ -416,7 +429,6 @@ local function start_live_session(cmd_generator)
         state.debounce_timer:stop()
       end
       state.debounce_timer = uv.new_timer()
-
       state.debounce_timer:start(
         150,
         0,
@@ -455,6 +467,7 @@ local function start_live_session(cmd_generator)
       )
     end,
   })
+
   vim.cmd 'startinsert'
 end
 
@@ -470,6 +483,14 @@ end
 function M.live_files()
   start_live_session(function(query)
     local escaped = query:gsub('"', '\\"')
+
+    if fn.executable 'fd' == 1 then
+      return string.format(
+        'fd --type f --color=never --full-path "%s" .',
+        escaped
+      )
+    end
+
     return {
       'sh',
       '-c',
