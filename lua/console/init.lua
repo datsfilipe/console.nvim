@@ -102,7 +102,7 @@ local function apply_search_highlight(query)
   local regex = '\\c' .. fn.escape(query, '\\/.*$^~[]')
   ---@diagnostic disable-next-line: param-type-mismatch
   pcall(vim.cmd, string.format('syntax match ConsoleMatch /%s/', regex))
-  vim.cmd 'highlight default link ConsoleMatch Search'
+  vim.cmd 'highlight! link ConsoleMatch Search'
 end
 
 local function apply_extmarks(start_line, end_line)
@@ -160,8 +160,24 @@ local function flush_queue()
   local bo = vim.bo[state.buf]
   bo.modifiable = true
 
-  local start_line = api.nvim_buf_line_count(state.buf)
-  api.nvim_buf_set_lines(state.buf, -1, -1, false, state.queue)
+  local current_count = api.nvim_buf_line_count(state.buf)
+  local is_initial_empty = false
+  if current_count == 1 then
+    local lines = api.nvim_buf_get_lines(state.buf, 0, 1, false)
+    if lines[1] == '' then
+      is_initial_empty = true
+    end
+  end
+
+  local start_line = current_count
+
+  if is_initial_empty then
+    api.nvim_buf_set_lines(state.buf, 0, -1, false, state.queue)
+    start_line = 0
+  else
+    api.nvim_buf_set_lines(state.buf, -1, -1, false, state.queue)
+  end
+
   local end_line = api.nvim_buf_line_count(state.buf)
 
   if end_line > 10000 then
