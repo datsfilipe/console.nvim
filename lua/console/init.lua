@@ -239,6 +239,26 @@ local function open_file(file, row, col)
   end
 end
 
+local function get_cursor_word()
+  local col = api.nvim_win_get_cursor(0)[2]
+  local line = api.nvim_get_current_line()
+
+  local init = 1
+  while true do
+    local s, e = line:find('%S+', init)
+    if not s then
+      break
+    end
+
+    if (col + 1) >= s and (col + 1) <= e then
+      return line:sub(s, e)
+    end
+
+    init = e + 1
+  end
+  return nil
+end
+
 local function jump_to_result()
   local line = api.nvim_get_current_line()
 
@@ -254,17 +274,30 @@ local function jump_to_result()
     end
   end
 
-  local cfile = fn.expand '<cfile>'
-  if cfile ~= '' then
-    local path = resolve_valid_path(cfile)
+  local cursor_word = get_cursor_word()
+  if cursor_word then
+    local f_path, f_row, f_col = cursor_word:match '^(.-):(%d+):(%d+)'
+    if not f_path then
+      f_path, f_row = cursor_word:match '^(.-):(%d+)'
+    end
+
+    if f_path then
+      local path = resolve_valid_path(f_path)
+      if path then
+        return open_file(path, f_row, f_col)
+      end
+    end
+
+    local clean = cursor_word:gsub('^[\'",:;]+', ''):gsub('[\'",:;]+$', '')
+    local path = resolve_valid_path(clean)
     if path then
       return open_file(path)
     end
   end
 
-  for word in line:gmatch '%S+' do
-    local clean = word:gsub('[\'",:;]$', '')
-    local path = resolve_valid_path(clean)
+  local cfile = fn.expand '<cfile>'
+  if cfile ~= '' then
+    local path = resolve_valid_path(cfile)
     if path then
       return open_file(path)
     end

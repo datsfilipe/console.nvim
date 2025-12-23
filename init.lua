@@ -1,3 +1,6 @@
+vim.opt.number = true
+vim.opt.relativenumber = true
+
 vim.cmd [[set runtimepath=$VIMRUNTIME]]
 
 local current_dir = vim.fn.getcwd()
