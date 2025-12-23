@@ -1,53 +1,37 @@
 <div align="center">
 
-# `console.nvim`
+# console.nvim
 
-Terminal interaction on Neovim. Might be a useless plugin, but I kinda like the aesthetics of it.
+Async command runner, live grep, and file searcher for Neovim.
 
 </div>
 
+## Requirements
+
+- `ripgrep` (required for grep)
+- `fd` (optional, for file find)
+
 ## Installation
 
-- **lazy.nvim**:
-
 ```lua
-{
-  "datsfilipe/console.nvim",
-  config = function()
-    require("console").setup()
-  end
-}
-```
+vim.pack.add 'user/console.nvim'
 
-- **vim.pack.add**:
-
-```lua
-vim.pack.add({
-  'https://github.com/datsfilipe/console.nvim',
-})
-
-require("console").setup()
-```
-
-## Configuration
-
-You can customize the plugin by passing a table to the setup function. The default configuration is:
-
-```lua
 require("console").setup({
-  -- The name of the user command
-  command_name = 'ConsoleRun',
-  -- Hijacks the standard :! command to use console.nvim
-  hijack_bang = true, 
-  -- Global and buffer-local mapping to close the window
-  -- Set to false or nil to disable
-  close_key = ';q',
-  window = {
-    height_ratio = 0.45,
-    min_height = 6,
-  },
+  command_name = "ConsoleRun",
+  grep_command_name = "LiveGrep",
+  find_command_name = "LiveFiles",
+  close_key = ";q",
+  window = { height_ratio = 0.45, min_height = 6 },
 })
 ```
+
+## Usage
+
+| command       |  action                                                       |
+|---------------|---------------------------------------------------------------|
+| `:ConsoleRun` | run shell command asynchronously (e.g., `:ConsoleRun make`).  |
+| `:LiveGrep`   | Open live grep input.                                         |
+| `:LiveFiles`  | Open live file finder.                                        |
 
 ## License
 
