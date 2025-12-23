@@ -14,24 +14,25 @@ Async command runner, live grep, and file searcher for Neovim.
 ## Installation
 
 ```lua
-vim.pack.add 'user/console.nvim'
+vim.pack.add "user/console.nvim"
 
 require("console").setup({
   command_name = "ConsoleRun",
+  close_command_name = "ConsoleClose",
   grep_command_name = "LiveGrep",
   find_command_name = "LiveFiles",
-  close_key = ";q",
   window = { height_ratio = 0.45, min_height = 6 },
 })
 ```
 
 ## Usage
 
-| command       |  action                                                       |
-|---------------|---------------------------------------------------------------|
-| `:ConsoleRun` | run shell command asynchronously (e.g., `:ConsoleRun make`).  |
-| `:LiveGrep`   | Open live grep input.                                         |
-| `:LiveFiles`  | Open live file finder.                                        |
+| command         |  action                                                       |
+|-----------------|---------------------------------------------------------------|
+| `:ConsoleRun`   | run shell command asynchronously (e.g., `:ConsoleRun make`).  |
+| `:ConsoleClose` | close it.                                                     |
+| `:LiveGrep`     | open live grep input.                                         |
+| `:LiveFiles`    | open live file finder.                                        |
 
 ## License
 

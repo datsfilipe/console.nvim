@@ -6,9 +6,9 @@ local uv = vim.loop
 
 local config = {
   command_name = 'ConsoleRun',
+  close_command_name = 'ConsoleClose',
   grep_command_name = 'LiveGrep',
   find_command_name = 'LiveFiles',
-  close_key = ';q',
   window = {
     height_ratio = 0.45,
     min_height = 6,
@@ -323,9 +323,6 @@ local function ensure_output_window()
     local opts = { buffer = state.buf, silent = true }
     vim.keymap.set('n', '<CR>', jump_to_result, opts)
     vim.keymap.set('n', 'q', M.close, opts)
-    if config.close_key then
-      vim.keymap.set('n', config.close_key, M.close, opts)
-    end
   end
 
   if not (state.win and api.nvim_win_is_valid(state.win)) then
@@ -537,14 +534,21 @@ end
 
 function M.setup(opts)
   config = vim.tbl_deep_extend('force', config, opts or {})
+
   api.nvim_create_user_command(config.command_name, function(o)
     M.run(o.args)
   end, { nargs = '+', complete = 'shellcmd' })
+
   if config.grep_command_name then
     api.nvim_create_user_command(config.grep_command_name, M.live_grep, {})
   end
+
   if config.find_command_name then
     api.nvim_create_user_command(config.find_command_name, M.live_files, {})
+  end
+
+  if config.close_command_name then
+    api.nvim_create_user_command(config.close_command_name, M.close, {})
   end
 end
 

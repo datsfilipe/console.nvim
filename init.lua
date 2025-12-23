@@ -10,9 +10,5 @@ local status, plugin = pcall(require, 'console')
 if not status then
   vim.print 'shit happens'
 else
-  plugin.setup {
-    command_name = 'TestRun',
-    grep_command_name = 'TestGrep',
-    find_command_name = 'TestFind',
-  }
+  plugin.setup {}
 end
