@@ -7,7 +7,6 @@ local uv = vim.loop
 local config = {
   command_name = 'ConsoleRun',
   grep_command_name = 'LiveGrep',
-  hijack_bang = true,
   close_key = ';q',
   window = {
     height_ratio = 0.45,
@@ -320,7 +319,6 @@ function M.run(cmdline)
   api.nvim_buf_set_lines(state.buf, 0, -1, false, { '$ ' .. cmdline })
   bo.modifiable = false
 
-  -- (Simplification of original logic: just add context if it looks like a path)
   for part in cmdline:gmatch '%S+' do
     if part:match '/' and uv.fs_stat(part) then
       vim.opt_local.path:append(part)
@@ -437,30 +435,6 @@ function M.setup(opts)
   end, { nargs = '+', complete = 'shellcmd' })
   if config.grep_command_name then
     api.nvim_create_user_command(config.grep_command_name, M.live_grep, {})
-  end
-
-  if config.hijack_bang then
-    vim.keymap.set('c', '<CR>', function()
-      local cmdtype = fn.getcmdtype()
-      local cmdline = fn.getcmdline()
-
-      if cmdtype == ':' and cmdline:match '^!' then
-        local command = cmdline:sub(2)
-        fn.histadd('cmd', cmdline)
-
-        api.nvim_feedkeys(
-          api.nvim_replace_termcodes('<C-c>', true, false, true),
-          'n',
-          false
-        )
-
-        vim.schedule(function()
-          M.run(command)
-        end)
-        return ''
-      end
-      return '<CR>'
-    end, { expr = true })
   end
 end
 
