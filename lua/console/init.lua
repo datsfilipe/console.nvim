@@ -1,8 +1,8 @@
 local M = {}
 
 local api = vim.api
-local split = vim.split
-local tbl_insert = table.insert
+local fn = vim.fn
+local uv = vim.loop
 
 local config = {
   command_name = 'ConsoleRun',
@@ -22,73 +22,83 @@ local state = {
   input_win = nil,
   origin_win = nil,
   job = nil,
+  timer = nil,
   queue = {},
   remainder = '',
-  keep_alive = false,
-  timer = nil,
-  last_command = nil,
   ns_id = api.nvim_create_namespace 'ConsoleHighlights',
 }
 
 local augroup = api.nvim_create_augroup('ConsoleRun', { clear = true })
 
+local function stop_active_processes()
+  if state.job then
+    pcall(fn.jobstop, state.job)
+    state.job = nil
+  end
+  if state.timer then
+    state.timer:stop()
+    if not state.timer:is_closing() then
+      state.timer:close()
+    end
+    state.timer = nil
+  end
+end
+
 local function strip_ansi(text)
   return text:gsub('\27%[[0-9;?]*[a-zA-Z]', '')
 end
 
-local function apply_static_syntax()
-  vim.cmd 'syntax clear'
+local function resolve_valid_path(text)
+  if not text or #text < 2 or text == '.' or text == '..' then
+    return nil
+  end
 
-  vim.cmd [[syntax match ConsolePrompt /^\$ .*/]]
-  vim.cmd [[syntax match ConsoleExit /^\[exit \d\+\]/]]
-  vim.cmd [[highlight default link ConsolePrompt Statement]]
-  vim.cmd [[highlight default link ConsoleExit Comment]]
+  if uv.fs_stat(text) then
+    return text
+  end
 
-  vim.cmd [[syntax match ConsoleLine /:\d\+:\d\+:/]]
-  vim.cmd [[syntax match ConsoleLine /:\d\+:/]]
-  vim.cmd [[highlight default link ConsoleLine Constant]]
+  local found = fn.findfile(text)
+  if found ~= '' then
+    return found
+  end
+
+  found = fn.finddir(text)
+  if found ~= '' then
+    return found
+  end
+
+  return nil
 end
 
-local function highlight_query(query)
+local function apply_syntax(buf)
+  api.nvim_buf_call(buf, function()
+    vim.cmd [[
+      syntax clear
+      syntax match ConsolePrompt /^\$ .*/
+      syntax match ConsoleExit /^\[exit \d\+\]/
+      syntax match ConsoleLine /:\d\+:\d\+:/
+      syntax match ConsoleLine /:\d\+:/
+      
+      highlight default link ConsolePrompt Statement
+      highlight default link ConsoleExit Comment
+      highlight default link ConsoleLine Constant
+    ]]
+  end)
+end
+
+local function apply_search_highlight(query)
   ---@diagnostic disable-next-line: param-type-mismatch
   pcall(vim.cmd, 'syntax clear ConsoleMatch')
   if not query or query == '' then
     return
   end
 
-  local clean_query = vim.fn.escape(query, '\\/.*$^~[]')
-  local regex = '\\c' .. clean_query
+  local regex = '\\c' .. fn.escape(query, '\\/.*$^~[]')
   vim.cmd(string.format('syntax match ConsoleMatch /%s/', regex))
   vim.cmd 'highlight default link ConsoleMatch Search'
 end
 
-local function resolve_valid_path(text)
-  if text == '.' or text == '..' then
-    return nil
-  end
-
-  if #text < 2 then
-    return nil
-  end
-
-  if vim.loop.fs_stat(text) then
-    return text
-  end
-
-  local found_file = vim.fn.findfile(text)
-  if found_file and found_file ~= '' then
-    return found_file
-  end
-
-  local found_dir = vim.fn.finddir(text)
-  if found_dir and found_dir ~= '' then
-    return found_dir
-  end
-
-  return nil
-end
-
-local function apply_highlights(start_line, end_line)
+local function apply_extmarks(start_line, end_line)
   if not (state.buf and api.nvim_buf_is_valid(state.buf)) then
     return
   end
@@ -100,72 +110,104 @@ local function apply_highlights(start_line, end_line)
       local line_idx = start_line + i - 1
 
       local s, _, grep_file = line:find '^([^: ]+):%d+:'
-      if s and grep_file then
-        if resolve_valid_path(grep_file) then
-          api.nvim_buf_add_highlight(
-            state.buf,
-            state.ns_id,
-            'Directory',
-            line_idx,
-            s - 1,
-            #grep_file
-          )
-
-          goto continue
-        end
-      end
-
-      local init = 1
-      while true do
-        local ws, we = line:find('%S+', init)
-        if not ws then
-          break
-        end
-
-        local word = line:sub(ws, we)
-        local clean_word = word:gsub('[\'",:;]$', '')
-        local clean_len = #clean_word
-
-        if clean_len > 0 then
-          if resolve_valid_path(clean_word) then
-            api.nvim_buf_add_highlight(
-              state.buf,
-              state.ns_id,
-              'Directory',
-              line_idx,
-              ws - 1,
-              ws - 1 + clean_len
-            )
+      if s and grep_file and resolve_valid_path(grep_file) then
+        api.nvim_buf_set_extmark(state.buf, state.ns_id, line_idx, s - 1, {
+          end_col = s - 1 + #grep_file,
+          hl_group = 'Directory',
+          priority = 100,
+        })
+      else
+        local init = 1
+        while true do
+          local ws, we = line:find('%S+', init)
+          if not ws then
+            break
           end
+
+          local word = line:sub(ws, we)
+          local clean_word = word:gsub('[\'",:;]$', '')
+
+          if resolve_valid_path(clean_word) then
+            api.nvim_buf_set_extmark(state.buf, state.ns_id, line_idx, ws - 1, {
+              end_col = ws - 1 + #clean_word,
+              hl_group = 'Directory',
+              priority = 100,
+            })
+          end
+          init = we + 1
         end
-
-        init = we + 1
       end
-
-      ::continue::
     end
   end)
+end
+
+local function flush_queue()
+  if
+    #state.queue == 0 or not (state.buf and api.nvim_buf_is_valid(state.buf))
+  then
+    state.queue = {}
+    return
+  end
+
+  local bo = vim.bo[state.buf]
+  bo.modifiable = true
+
+  local start_line = api.nvim_buf_line_count(state.buf)
+  api.nvim_buf_set_lines(state.buf, -1, -1, false, state.queue)
+  local end_line = api.nvim_buf_line_count(state.buf)
+
+  if end_line > 10000 then
+    api.nvim_buf_set_lines(state.buf, 0, end_line - 9000, false, {})
+  end
+
+  bo.modifiable = false
+  state.queue = {}
+
+  apply_extmarks(start_line, end_line)
+
+  if state.win and api.nvim_win_is_valid(state.win) then
+    api.nvim_win_set_cursor(
+      state.win,
+      { api.nvim_buf_line_count(state.buf), 0 }
+    )
+    vim.cmd 'redraw'
+  end
+end
+
+local function append_data(data)
+  if not data or data == '' then
+    return
+  end
+
+  data = strip_ansi(data:gsub('\r', ''))
+  local text = state.remainder .. data
+
+  if not text:find('\n', 1, true) then
+    state.remainder = text
+    return
+  end
+
+  local lines = vim.split(text, '\n', { plain = true })
+  state.remainder = lines[#lines]
+  lines[#lines] = nil
+
+  vim.list_extend(state.queue, lines)
+  vim.schedule(flush_queue)
 end
 
 local function open_file(file, row, col)
   M.close()
 
-  local target_win = state.origin_win
-  if not (target_win and api.nvim_win_is_valid(target_win)) then
-    target_win = api.nvim_get_current_win()
-  end
+  local target = (state.origin_win and api.nvim_win_is_valid(state.origin_win))
+      and state.origin_win
+    or api.nvim_get_current_win()
 
-  api.nvim_set_current_win(target_win)
+  api.nvim_set_current_win(target)
+  ---@diagnostic disable-next-line: param-type-mismatch
+  pcall(vim.cmd, 'edit ' .. fn.fnameescape(file))
 
-  local safe_file = vim.fn.fnameescape(file)
-  local ok = pcall(vim.cmd, 'edit ' .. safe_file)
-
-  if ok and row then
-    local r, c = tonumber(row), tonumber(col or 0)
-    if c > 0 then
-      c = c - 1
-    end
-    pcall(api.nvim_win_set_cursor, 0, { r, c })
+  if row then
+    pcall(api.nvim_win_set_cursor, 0, { tonumber(row), tonumber(col or 1) - 1 })
     vim.cmd 'normal! zz'
   end
 end
@@ -181,201 +223,76 @@ local function jump_to_result()
   if file then
     local path = resolve_valid_path(file)
     if path then
-      open_file(path, row, col)
-      return
+      return open_file(path, row, col)
     end
   end
 
-  local cfile = vim.fn.expand '<cfile>'
-  if cfile and cfile ~= '' then
-    local path = resolve_valid_path(cfile)
-    if path then
-      open_file(path)
-      return
-    end
+  local cfile = fn.expand '<cfile>'
+  if cfile ~= '' and resolve_valid_path(cfile) then
+    return open_file(cfile)
   end
 
   for word in line:gmatch '%S+' do
     local clean = word:gsub('[\'",:;]$', '')
     local path = resolve_valid_path(clean)
     if path then
-      open_file(path)
-      return
+      return open_file(path)
     end
   end
 end
 
-local function inject_command_context()
-  if not state.last_command then
-    return
-  end
-  for part in state.last_command:gmatch '%S+' do
-    if part:match '/' or part == '..' then
-      local clean_path = part:gsub('^[\'"]', ''):gsub('[\'"]$', '')
-      if vim.loop.fs_stat(clean_path) then
-        vim.opt_local.path:append(clean_path)
-      end
-    end
-  end
-  vim.opt_local.path:append '..'
-  vim.opt_local.path:append '**'
-end
-
-local function reset_buffer()
-  if not (state.buf and api.nvim_buf_is_valid(state.buf)) then
-    state.buf = api.nvim_create_buf(false, true)
-  end
-
-  local bo = vim.bo[state.buf]
-  bo.modifiable = true
+local function set_common_buf_opts(buf)
+  local bo = vim.bo[buf]
   bo.buftype = 'nofile'
   bo.swapfile = false
   bo.bufhidden = 'hide'
   bo.filetype = 'console'
-
-  api.nvim_buf_set_lines(state.buf, 0, -1, false, {})
-  api.nvim_buf_clear_namespace(state.buf, state.ns_id, 0, -1)
-  bo.modifiable = false
-
-  api.nvim_buf_call(state.buf, function()
-    apply_static_syntax()
-    inject_command_context()
-  end)
-
-  vim.keymap.set(
-    'n',
-    '<CR>',
-    jump_to_result,
-    { buffer = state.buf, silent = true }
-  )
 end
 
-local function ensure_window()
-  local cur = api.nvim_get_current_win()
-  if cur ~= state.win and cur ~= state.input_win then
-    state.origin_win = cur
-  end
-
-  reset_buffer()
-
-  local total_lines = vim.o.lines
-  local height = math.max(
-    config.window.min_height,
-    math.floor(total_lines * config.window.height_ratio)
-  )
-
-  if state.win and api.nvim_win_is_valid(state.win) then
-    api.nvim_win_set_buf(state.win, state.buf)
-    pcall(api.nvim_win_set_height, state.win, height)
-    return
-  end
-
-  vim.cmd(string.format('botright %dsplit', height))
-  state.win = api.nvim_get_current_win()
-  api.nvim_win_set_buf(state.win, state.buf)
-
-  local wo = vim.wo[state.win]
-  wo.number = false
-  wo.relativenumber = false
-  wo.signcolumn = 'no'
-  wo.wrap = false
-  wo.cursorline = true
-  wo.winfixheight = true
-  wo.statusline = ' '
-  wo.fillchars = 'eob: '
-
-  vim.keymap.set(
-    'n',
-    'q',
-    M.close,
-    { buffer = state.buf, silent = true, nowait = true }
-  )
-  if config.close_key then
-    vim.keymap.set(
-      'n',
-      config.close_key,
-      M.close,
-      { buffer = state.buf, silent = true, nowait = true }
-    )
-  end
-end
-
-local function flush_queue()
-  local queue_len = #state.queue
-  if queue_len == 0 then
-    return
+local function ensure_output_window()
+  if
+    api.nvim_get_current_win() ~= state.win
+    and api.nvim_get_current_win() ~= state.input_win
+  then
+    state.origin_win = api.nvim_get_current_win()
   end
 
   if not (state.buf and api.nvim_buf_is_valid(state.buf)) then
-    state.queue = {}
-    state.remainder = ''
-    return
+    state.buf = api.nvim_create_buf(false, true)
+    set_common_buf_opts(state.buf)
+    apply_syntax(state.buf)
+
+    local opts = { buffer = state.buf, silent = true }
+    vim.keymap.set('n', '<CR>', jump_to_result, opts)
+    vim.keymap.set('n', 'q', M.close, opts)
+    if config.close_key then
+      vim.keymap.set('n', config.close_key, M.close, opts)
+    end
   end
 
-  local bo = vim.bo[state.buf]
-  bo.modifiable = true
+  if not (state.win and api.nvim_win_is_valid(state.win)) then
+    local height = math.max(
+      config.window.min_height,
+      math.floor(vim.o.lines * config.window.height_ratio)
+    )
+    vim.cmd('botright ' .. height .. 'split')
+    state.win = api.nvim_get_current_win()
+    api.nvim_win_set_buf(state.win, state.buf)
 
-  local start_line = api.nvim_buf_line_count(state.buf)
-
-  api.nvim_buf_set_lines(state.buf, -1, -1, false, state.queue)
-
-  local end_line = api.nvim_buf_line_count(state.buf)
-
-  apply_highlights(start_line, end_line)
-
-  if end_line > 10000 then
-    api.nvim_buf_set_lines(state.buf, 0, end_line - 9000, false, {})
-  end
-
-  bo.modifiable = false
-
-  if state.win and api.nvim_win_is_valid(state.win) then
-    local new_count = api.nvim_buf_line_count(state.buf)
-    api.nvim_win_set_cursor(state.win, { new_count, 0 })
-    vim.cmd 'redraw'
-  end
-
-  state.queue = {}
-end
-
-local function schedule_flush()
-  vim.schedule(flush_queue)
-end
-
-local function append_stream(data)
-  if not data or data == '' then
-    return
-  end
-  data = data:gsub('\r', '')
-  data = strip_ansi(data)
-
-  local text = state.remainder .. data
-  if not text:find('\n', 1, true) then
-    state.remainder = text
-    return
-  end
-
-  local lines = split(text, '\n', { plain = true })
-  state.remainder = lines[#lines]
-  lines[#lines] = nil
-
-  for _, line in ipairs(lines) do
-    tbl_insert(state.queue, line)
-  end
-  schedule_flush()
-end
-
-local function stop_job()
-  if state.job then
-    pcall(vim.fn.jobstop, state.job)
-    state.job = nil
+    local wo = vim.wo[state.win]
+    wo.winfixheight = true
+    wo.number = false
+    wo.signcolumn = 'no'
+    wo.statusline = ' '
+    wo.fillchars = 'eob: '
+  else
+    api.nvim_win_set_buf(state.win, state.buf)
   end
 end
 
 function M.close()
-  stop_job()
+  stop_active_processes()
   api.nvim_clear_autocmds { group = augroup }
-  state.keep_alive = false
 
   if state.win and api.nvim_win_is_valid(state.win) then
     api.nvim_win_close(state.win, true)
@@ -388,121 +305,56 @@ function M.close()
   end
 end
 
-local function send_input(input)
-  if state.job then
-    vim.fn.chansend(state.job, input .. '\r')
-  else
-    vim.notify('No active job', vim.log.levels.WARN)
-  end
-end
-
-local function append_direct(lines)
-  for _, line in ipairs(lines) do
-    tbl_insert(state.queue, line)
-  end
-  schedule_flush()
-end
-
 function M.run(cmdline)
   if not cmdline or cmdline == '' then
     return
   end
 
-  state.last_command = cmdline
-  ensure_window()
-  stop_job()
-  api.nvim_clear_autocmds { group = augroup }
+  ensure_output_window()
+  stop_active_processes()
   state.queue = {}
   state.remainder = ''
 
-  append_direct { '$ ' .. cmdline }
+  local bo = vim.bo[state.buf]
+  bo.modifiable = true
+  api.nvim_buf_set_lines(state.buf, 0, -1, false, { '$ ' .. cmdline })
+  bo.modifiable = false
 
-  state.job = vim.fn.jobstart(cmdline, {
+  -- (Simplification of original logic: just add context if it looks like a path)
+  for part in cmdline:gmatch '%S+' do
+    if part:match '/' and uv.fs_stat(part) then
+      vim.opt_local.path:append(part)
+    end
+  end
+
+  state.job = fn.jobstart(cmdline, {
     pty = true,
-    on_stdout = function(_, data)
-      if data then
-        append_stream(table.concat(data, '\n'))
-      end
+    on_stdout = function(_, d)
+      append_data(table.concat(d, '\n'))
     end,
-    on_stderr = function(_, data)
-      if data then
-        append_stream(table.concat(data, '\n'))
-      end
+    on_stderr = function(_, d)
+      append_data(table.concat(d, '\n'))
     end,
     on_exit = function(_, code)
       state.job = nil
-      state.keep_alive = false
       if state.remainder ~= '' then
-        tbl_insert(state.queue, state.remainder)
+        table.insert(state.queue, state.remainder)
         state.remainder = ''
       end
-      tbl_insert(state.queue, string.format('[exit %d]', code or -1))
-      schedule_flush()
-    end,
-  })
-
-  if state.job <= 0 then
-    append_direct { '[job failed to start]' }
-    state.job = nil
-  end
-
-  api.nvim_create_autocmd('CmdlineLeave', {
-    group = augroup,
-    callback = function()
-      vim.schedule(function()
-        if state.job and not state.keep_alive then
-          M.close()
-        end
-      end)
-    end,
-  })
-end
-
-local function spawn_grep(query)
-  stop_job()
-  state.last_command = nil
-
-  if state.buf and api.nvim_buf_is_valid(state.buf) then
-    local bo = vim.bo[state.buf]
-    bo.modifiable = true
-    api.nvim_buf_set_lines(state.buf, 0, -1, false, {})
-    api.nvim_buf_clear_namespace(state.buf, state.ns_id, 0, -1)
-    bo.modifiable = false
-
-    api.nvim_buf_call(state.buf, function()
-      highlight_query(query)
-    end)
-  end
-
-  state.queue = {}
-  state.remainder = ''
-  if query == '' then
-    return
-  end
-
-  local cmd = string.format(
-    'rg --vimgrep --smart-case --color=never "%s" .',
-    query:gsub('"', '\\"')
-  )
-
-  state.job = vim.fn.jobstart(cmd, {
-    pty = false,
-    stdout_buffered = false,
-    on_stdout = function(_, data)
-      if data then
-        append_stream(table.concat(data, '\n'))
-      end
-    end,
-    on_stderr = function(_, data)
-      if data then
-        append_stream(table.concat(data, '\n'))
-      end
+      table.insert(state.queue, string.format('[exit %d]', code or -1))
+      vim.schedule(flush_queue)
     end,
   })
 end
 
 function M.live_grep()
-  ensure_window()
+  ensure_output_window()
+  stop_active_processes()
+
+  vim.bo[state.buf].modifiable = true
+  api.nvim_buf_set_lines(state.buf, 0, -1, false, {})
+  api.nvim_buf_clear_namespace(state.buf, state.ns_id, 0, -1)
+  vim.bo[state.buf].modifiable = false
 
   state.input_buf = api.nvim_create_buf(false, true)
   vim.bo[state.input_buf].buftype = 'nofile'
@@ -516,36 +368,63 @@ function M.live_grep()
   vim.wo[state.input_win].number = false
   vim.wo[state.input_win].signcolumn = 'no'
 
+  local map_opts = { buffer = state.input_buf }
+  vim.keymap.set({ 'n', 'i' }, '<Esc>', M.close, map_opts)
+  vim.keymap.set('i', '<CR>', function()
+    vim.cmd 'stopinsert'
+    if state.win and api.nvim_win_is_valid(state.win) then
+      api.nvim_set_current_win(state.win)
+    end
+  end, map_opts)
+
   api.nvim_create_autocmd('TextChangedI', {
     buffer = state.input_buf,
     callback = function()
       if state.timer then
         state.timer:stop()
       end
-      state.timer = vim.loop.new_timer()
-
+      state.timer = uv.new_timer()
       state.timer:start(
         150,
         0,
         vim.schedule_wrap(function()
           local lines = api.nvim_buf_get_lines(state.input_buf, 0, 1, false)
-          if lines and lines[1] then
-            spawn_grep(lines[1])
+          local query = lines[1] or ''
+
+          if state.job then
+            fn.jobstop(state.job)
           end
+
+          api.nvim_buf_call(state.buf, function()
+            apply_search_highlight(query)
+          end)
+
+          vim.bo[state.buf].modifiable = true
+          api.nvim_buf_set_lines(state.buf, 0, -1, false, {})
+          vim.bo[state.buf].modifiable = false
+          state.queue = {}
+          state.remainder = ''
+
+          if query == '' then
+            return
+          end
+
+          local cmd = string.format(
+            'rg --vimgrep --smart-case --color=never "%s" .',
+            query:gsub('"', '\\"')
+          )
+          state.job = fn.jobstart(cmd, {
+            on_stdout = function(_, d)
+              append_data(table.concat(d, '\n'))
+            end,
+            on_stderr = function(_, d)
+              append_data(table.concat(d, '\n'))
+            end,
+          })
         end)
       )
     end,
   })
-
-  vim.keymap.set('i', '<Esc>', M.close, { buffer = state.input_buf })
-  vim.keymap.set('n', 'q', M.close, { buffer = state.input_buf })
-
-  vim.keymap.set('i', '<CR>', function()
-    vim.cmd 'stopinsert'
-    if state.win and api.nvim_win_is_valid(state.win) then
-      api.nvim_set_current_win(state.win)
-    end
-  end, { buffer = state.input_buf })
 
   vim.cmd 'startinsert'
 end
@@ -553,35 +432,30 @@ end
 function M.setup(opts)
   config = vim.tbl_deep_extend('force', config, opts or {})
 
-  api.nvim_create_user_command(config.command_name, function(cmd_opts)
-    M.run(cmd_opts.args)
+  api.nvim_create_user_command(config.command_name, function(o)
+    M.run(o.args)
   end, { nargs = '+', complete = 'shellcmd' })
-  api.nvim_create_user_command(config.grep_command_name, function()
-    M.live_grep()
-  end, {})
-
-  if config.close_key then
-    vim.keymap.set('n', config.close_key, M.close, { silent = true })
+  if config.grep_command_name then
+    api.nvim_create_user_command(config.grep_command_name, M.live_grep, {})
   end
 
   if config.hijack_bang then
     vim.keymap.set('c', '<CR>', function()
-      local cmdtype = vim.fn.getcmdtype()
-      local cmdline = vim.fn.getcmdline()
+      local cmdtype = fn.getcmdtype()
+      local cmdline = fn.getcmdline()
+
       if cmdtype == ':' and cmdline:match '^!' then
-        vim.fn.histadd('cmd', cmdline)
+        local command = cmdline:sub(2)
+        fn.histadd('cmd', cmdline)
+
         api.nvim_feedkeys(
           api.nvim_replace_termcodes('<C-c>', true, false, true),
           'n',
           false
         )
-        state.keep_alive = true
-        local command = cmdline:sub(2)
+
         vim.schedule(function()
           M.run(command)
-          vim.schedule(function()
-            state.keep_alive = false
-          end)
         end)
         return ''
       end
