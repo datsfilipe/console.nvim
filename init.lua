@@ -10,5 +10,6 @@ else
   plugin.setup {
     command_name = 'TestRun',
     grep_command_name = 'TestGrep',
+    find_command_name = 'TestFind',
   }
 end

@@ -7,6 +7,7 @@ local uv = vim.loop
 local config = {
   command_name = 'ConsoleRun',
   grep_command_name = 'LiveGrep',
+  find_command_name = 'LiveFiles',
   close_key = ';q',
   window = {
     height_ratio = 0.45,
@@ -249,11 +250,9 @@ local function set_common_buf_opts(buf)
 end
 
 local function ensure_output_window()
-  if
-    api.nvim_get_current_win() ~= state.win
-    and api.nvim_get_current_win() ~= state.input_win
-  then
-    state.origin_win = api.nvim_get_current_win()
+  local current_win = api.nvim_get_current_win()
+  if current_win ~= state.win and current_win ~= state.input_win then
+    state.origin_win = current_win
   end
 
   if not (state.buf and api.nvim_buf_is_valid(state.buf)) then
@@ -270,23 +269,27 @@ local function ensure_output_window()
   end
 
   if not (state.win and api.nvim_win_is_valid(state.win)) then
-    local height = math.max(
-      config.window.min_height,
-      math.floor(vim.o.lines * config.window.height_ratio)
-    )
-    vim.cmd('botright ' .. height .. 'split')
-    state.win = api.nvim_get_current_win()
-    api.nvim_win_set_buf(state.win, state.buf)
-
-    local wo = vim.wo[state.win]
-    wo.winfixheight = true
-    wo.number = false
-    wo.signcolumn = 'no'
-    wo.statusline = ' '
-    wo.fillchars = 'eob: '
-  else
-    api.nvim_win_set_buf(state.win, state.buf)
+    local wins = fn.win_findbuf(state.buf)
+    if #wins > 0 then
+      state.win = wins[1]
+    else
+      local height = math.max(
+        config.window.min_height,
+        math.floor(vim.o.lines * config.window.height_ratio)
+      )
+      vim.cmd('botright ' .. height .. 'split')
+      state.win = api.nvim_get_current_win()
+    end
   end
+
+  api.nvim_win_set_buf(state.win, state.buf)
+
+  local wo = vim.wo[state.win]
+  wo.winfixheight = true
+  wo.number = false
+  wo.signcolumn = 'no'
+  wo.statusline = ' '
+  wo.fillchars = 'eob: '
 end
 
 function M.close()
@@ -345,7 +348,7 @@ function M.run(cmdline)
   })
 end
 
-function M.live_grep()
+local function start_live_session(cmd_generator)
   ensure_output_window()
   stop_active_processes()
 
@@ -358,13 +361,21 @@ function M.live_grep()
   vim.bo[state.input_buf].buftype = 'nofile'
   vim.bo[state.input_buf].bufhidden = 'wipe'
 
-  vim.cmd 'botright 1split'
-  state.input_win = api.nvim_get_current_win()
+  if state.input_win and api.nvim_win_is_valid(state.input_win) then
+    api.nvim_set_current_win(state.input_win)
+  else
+    vim.cmd 'botright 1split'
+    state.input_win = api.nvim_get_current_win()
+  end
+
   api.nvim_win_set_buf(state.input_win, state.input_buf)
 
-  vim.wo[state.input_win].winfixheight = true
-  vim.wo[state.input_win].number = false
-  vim.wo[state.input_win].signcolumn = 'no'
+  local wo = vim.wo[state.input_win]
+  wo.winfixheight = true
+  wo.number = false
+  wo.signcolumn = 'no'
+  wo.statusline = ' '
+  wo.fillchars = 'eob: '
 
   local map_opts = { buffer = state.input_buf }
   vim.keymap.set({ 'n', 'i' }, '<Esc>', M.close, map_opts)
@@ -407,10 +418,8 @@ function M.live_grep()
             return
           end
 
-          local cmd = string.format(
-            'rg --vimgrep --smart-case --color=never "%s" .',
-            query:gsub('"', '\\"')
-          )
+          local cmd = cmd_generator(query)
+
           state.job = fn.jobstart(cmd, {
             on_stdout = function(_, d)
               append_data(table.concat(d, '\n'))
@@ -427,14 +436,43 @@ function M.live_grep()
   vim.cmd 'startinsert'
 end
 
+function M.live_grep()
+  start_live_session(function(query)
+    return string.format(
+      'rg --vimgrep --smart-case --color=never "%s" .',
+      query:gsub('"', '\\"')
+    )
+  end)
+end
+
+function M.live_files()
+  start_live_session(function(query)
+    local escaped_query = query:gsub('"', '\\"')
+
+    return {
+      'sh',
+      '-c',
+      string.format(
+        'rg --files --color=never . | rg --smart-case --color=never "%s"',
+        escaped_query
+      ),
+    }
+  end)
+end
+
 function M.setup(opts)
   config = vim.tbl_deep_extend('force', config, opts or {})
 
   api.nvim_create_user_command(config.command_name, function(o)
     M.run(o.args)
   end, { nargs = '+', complete = 'shellcmd' })
+
   if config.grep_command_name then
     api.nvim_create_user_command(config.grep_command_name, M.live_grep, {})
+  end
+
+  if config.find_command_name then
+    api.nvim_create_user_command(config.find_command_name, M.live_files, {})
   end
 end
 
