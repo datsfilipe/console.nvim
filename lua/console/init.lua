@@ -13,6 +13,11 @@ local config = {
     height_ratio = 0.45,
     min_height = 6,
   },
+  keymaps = {
+    to_quickfix = '<C-q>',
+    close = 'q',
+    submit = '<CR>',
+  },
 }
 
 local state = {
@@ -329,6 +334,48 @@ local function jump_to_result()
   end
 end
 
+function M.to_quickfix()
+  if not (state.buf and api.nvim_buf_is_valid(state.buf)) then
+    return
+  end
+
+  local lines = api.nvim_buf_get_lines(state.buf, 0, -1, false)
+  local qf_items = {}
+
+  for _, line in ipairs(lines) do
+    if line ~= '' and not line:match '^%$ ' and not line:match '^%[exit' then
+      local file, row, col, text = line:match '^(.-):(%d+):(%d+):(.*)'
+
+      if file then
+        table.insert(qf_items, {
+          filename = resolve_valid_path(file) or file,
+          lnum = tonumber(row),
+          col = tonumber(col),
+          text = text,
+        })
+      else
+        local path = resolve_valid_path(line)
+        if path then
+          table.insert(qf_items, {
+            filename = path,
+            lnum = 1,
+            col = 1,
+            text = 'File Result',
+          })
+        end
+      end
+    end
+  end
+
+  if #qf_items > 0 then
+    fn.setqflist(qf_items, 'r')
+    vim.cmd 'copen'
+    M.close()
+  else
+    print 'No valid results to send to Quickfix.'
+  end
+end
+
 local function ensure_output_window()
   local current_win = api.nvim_get_current_win()
 
@@ -345,9 +392,18 @@ local function ensure_output_window()
     bo.filetype = 'console'
 
     apply_syntax(state.buf)
+
     local opts = { buffer = state.buf, silent = true }
-    vim.keymap.set('n', '<CR>', jump_to_result, opts)
-    vim.keymap.set('n', 'q', M.close, opts)
+
+    if config.keymaps.submit then
+      vim.keymap.set('n', config.keymaps.submit, jump_to_result, opts)
+    end
+    if config.keymaps.close then
+      vim.keymap.set('n', config.keymaps.close, M.close, opts)
+    end
+    if config.keymaps.to_quickfix then
+      vim.keymap.set('n', config.keymaps.to_quickfix, M.to_quickfix, opts)
+    end
   end
 
   if not (state.win and api.nvim_win_is_valid(state.win)) then
@@ -469,8 +525,16 @@ local function start_live_session(cmd_generator)
   wo.fillchars = 'eob: '
 
   local map_opts = { buffer = state.input_buf }
-  vim.keymap.set({ 'n', 'i' }, '<Esc>', M.close, map_opts)
-  vim.keymap.set('i', '<CR>', function()
+
+  if config.keymaps.close then
+    vim.keymap.set({ 'n', 'i' }, '<Esc>', M.close, map_opts)
+  end
+
+  if config.keymaps.to_quickfix then
+    vim.keymap.set({ 'n', 'i' }, config.keymaps.to_quickfix, M.to_quickfix, map_opts)
+  end
+
+  vim.keymap.set('i', config.keymaps.submit or '<CR>', function()
     vim.cmd 'stopinsert'
     if state.win and api.nvim_win_is_valid(state.win) then
       api.nvim_set_current_win(state.win)

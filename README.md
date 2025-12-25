@@ -22,6 +22,11 @@ require("console").setup({
   grep_command_name = "LiveGrep",
   find_command_name = "LiveFiles",
   window = { height_ratio = 0.45, min_height = 6 },
+  keymaps = {
+    to_quickfix = "<C-q>",
+    close = "q",
+    submit = "<CR>",
+  },
 })
 ```
 
