@@ -33,7 +33,6 @@ local state = {
   remainder = '',
   ns_id = api.nvim_create_namespace 'ConsoleHighlights',
   search_paths = {},
-  search_match_id = nil,
 }
 
 local augroup = api.nvim_create_augroup('ConsoleRun', { clear = true })
@@ -99,27 +98,15 @@ local function apply_syntax(buf)
 end
 
 local function apply_search_highlight(query)
-  if not (state.win and api.nvim_win_is_valid(state.win)) then
+  if not query or query == '' then
+    vim.o.hlsearch = false
+    fn.setreg('/', '')
     return
   end
 
-  api.nvim_win_call(state.win, function()
-    if state.search_match_id then
-      pcall(fn.matchdelete, state.search_match_id)
-      state.search_match_id = nil
-    end
-
-    if not query or query == '' then
-      return
-    end
-
-    local regex = '\\c' .. fn.escape(query, '\\/.*$^~[]')
-
-    local ok, id = pcall(fn.matchadd, 'Search', regex, 200)
-    if ok then
-      state.search_match_id = id
-    end
-  end)
+  local regex = '\\c' .. fn.escape(query, '\\/.*$^~[]')
+  fn.setreg('/', regex)
+  vim.o.hlsearch = true
 end
 
 local function apply_extmarks(start_line, end_line)
@@ -429,7 +416,6 @@ end
 
 function M.close()
   stop_active_processes()
-  state.search_match_id = nil
   api.nvim_clear_autocmds { group = augroup }
   if state.win and api.nvim_win_is_valid(state.win) then
     api.nvim_win_close(state.win, true)
@@ -496,7 +482,6 @@ local function start_live_session(cmd_generator)
   ensure_output_window()
   stop_active_processes()
 
-  state.search_match_id = nil
 
   vim.bo[state.buf].modifiable = true
   api.nvim_buf_set_lines(state.buf, 0, -1, false, {})
@@ -538,6 +523,7 @@ local function start_live_session(cmd_generator)
     vim.cmd 'stopinsert'
     if state.win and api.nvim_win_is_valid(state.win) then
       api.nvim_set_current_win(state.win)
+      api.nvim_win_set_cursor(state.win, { 1, 0 })
     end
   end, map_opts)
 
